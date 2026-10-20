@@ -15,6 +15,7 @@ import {
   projectGroupsSpanEnvironments,
   resolveSidebarProjectScopeKey,
   getSidebarProjectSettingsKey,
+  SIDEBAR_NEEDS_YOU_SCOPE_KEY,
 } from "./sidebarProjectGrouping";
 import { orderItemsByPreferredIds } from "./components/Sidebar.logic";
 import { legacyProjectCwdPreferenceKey } from "./uiStateStore";
@@ -595,5 +596,17 @@ describe("environment grouping", () => {
     });
 
     expect(groups.map((group) => group.displayName)).toEqual(["separate", "shared-repo"]);
+  });
+});
+
+describe("needs-you scope", () => {
+  it("survives scope resolution even when missing scopes are cleared", () => {
+    expect(
+      resolveSidebarProjectScopeKey({
+        groups: [],
+        key: SIDEBAR_NEEDS_YOU_SCOPE_KEY,
+        canClearMissingScope: true,
+      }),
+    ).toBe("needs-you");
   });
 });
