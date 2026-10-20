@@ -739,7 +739,9 @@ export function resolveThreadLastVisitedAt(
   return serverLastVisitedAt ?? undefined;
 }
 
-export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
+export function hasUnseenCompletion(
+  thread: Pick<ThreadStatusInput, "latestRun" | "lastVisitedAt">,
+): boolean {
   if (!thread.latestRun?.completedAt) return false;
   const completedAt = Date.parse(thread.latestRun.completedAt);
   if (Number.isNaN(completedAt)) return false;
@@ -990,7 +992,7 @@ export function resolveSidebarStatusGroup(
       return "working";
     case "ready": {
       const lastVisitedAt = resolveThreadLastVisitedAt(thread.lastVisitedAt, localLastVisitedAt);
-      return hasUnseenCompletion({ ...thread, lastVisitedAt }) ? "done" : "idle";
+      return hasUnseenCompletion({ latestRun: thread.latestRun, lastVisitedAt }) ? "done" : "idle";
     }
   }
 }
