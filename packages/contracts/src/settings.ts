@@ -61,6 +61,12 @@ export const DEFAULT_SIDEBAR_PROJECT_SORT_ORDER: SidebarProjectSortOrder = "upda
 export const SidebarThreadSortOrder = Schema.Literals(["updated_at", "created_at"]);
 export type SidebarThreadSortOrder = typeof SidebarThreadSortOrder.Type;
 const DEFAULT_SIDEBAR_THREAD_SORT_ORDER: SidebarThreadSortOrder = "updated_at";
+export const SidebarActiveSortMode = Schema.Literals(["manual", "time", "status"]);
+export type SidebarActiveSortMode = typeof SidebarActiveSortMode.Type;
+export const DEFAULT_SIDEBAR_ACTIVE_SORT_MODE: SidebarActiveSortMode = "manual";
+export const SidebarSortDirection = Schema.Literals(["oldest", "newest"]);
+export type SidebarSortDirection = typeof SidebarSortDirection.Type;
+export const DEFAULT_SIDEBAR_SORT_DIRECTION: SidebarSortDirection = "oldest";
 
 export const SidebarProjectGroupingMode = Schema.Literals([
   "repository",
@@ -458,6 +464,12 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   sidebarThreadSortOrder: SidebarThreadSortOrder.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_THREAD_SORT_ORDER)),
+  ),
+  sidebarActiveSortMode: SidebarActiveSortMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_ACTIVE_SORT_MODE)),
+  ),
+  sidebarSortDirection: SidebarSortDirection.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_SORT_DIRECTION)),
   ),
   sidebarThreadPreviewCount: SidebarThreadPreviewCount.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_THREAD_PREVIEW_COUNT)),
@@ -1647,6 +1659,8 @@ export const ClientSettingsPatch = Schema.Struct({
   ),
   sidebarProjectSortOrder: Schema.optionalKey(SidebarProjectSortOrder),
   sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
+  sidebarActiveSortMode: Schema.optionalKey(SidebarActiveSortMode),
+  sidebarSortDirection: Schema.optionalKey(SidebarSortDirection),
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
   timestampFormat: Schema.optionalKey(TimestampFormat),
   snapShotEnabled: Schema.optionalKey(Schema.Boolean),

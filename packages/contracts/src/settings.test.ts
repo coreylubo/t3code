@@ -1274,3 +1274,34 @@ describe("server model preferences", () => {
     });
   });
 });
+
+describe("ClientSettings sidebar active sort", () => {
+  it("keeps manual order, oldest first, for existing settings", () => {
+    const settings = decodeClientSettings({});
+    expect(settings.sidebarActiveSortMode).toBe("manual");
+    expect(settings.sidebarSortDirection).toBe("oldest");
+  });
+
+  it.each(["manual", "time", "status"] as const)("round-trips the %s mode", (mode) => {
+    const settings = decodeClientSettings({ sidebarActiveSortMode: mode });
+    expect(encodeClientSettings(settings).sidebarActiveSortMode).toBe(mode);
+    expect(decodeClientSettingsPatch({ sidebarActiveSortMode: mode }).sidebarActiveSortMode).toBe(
+      mode,
+    );
+  });
+
+  it.each(["oldest", "newest"] as const)("round-trips the %s direction", (direction) => {
+    const settings = decodeClientSettings({ sidebarSortDirection: direction });
+    expect(encodeClientSettings(settings).sidebarSortDirection).toBe(direction);
+    expect(
+      decodeClientSettingsPatch({ sidebarSortDirection: direction }).sidebarSortDirection,
+    ).toBe(direction);
+  });
+
+  it("rejects unsupported values", () => {
+    expect(() => decodeClientSettings({ sidebarActiveSortMode: "alphabetical" })).toThrow();
+    expect(() => decodeClientSettingsPatch({ sidebarActiveSortMode: "alphabetical" })).toThrow();
+    expect(() => decodeClientSettings({ sidebarSortDirection: "sideways" })).toThrow();
+    expect(() => decodeClientSettingsPatch({ sidebarSortDirection: "sideways" })).toThrow();
+  });
+});
