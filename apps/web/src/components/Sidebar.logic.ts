@@ -9,7 +9,14 @@ import {
 import { defaultAnimateLayoutChanges, type AnimateLayoutChanges } from "@dnd-kit/sortable";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import type { ContextMenuItem, EnvironmentId, ThreadId } from "@t3tools/contracts";
-import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
+import type {
+  SidebarActiveSortMode,
+  SidebarProjectSortOrder,
+  SidebarSortDirection,
+  SidebarThreadSortOrder,
+} from "@t3tools/contracts/settings";
+import * as DateTime from "effect/DateTime";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { AsyncResult } from "effect/reactivity";
 import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
 import {
@@ -933,6 +940,156 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
     return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
   }
   return "ready";
+}
+
+export type SidebarStatusGroup = "needs_input" | "done" | "failed" | "working" | "idle";
+
+const SIDEBAR_STATUS_GROUP_ORDER: readonly SidebarStatusGroup[] = [
+  "needs_input",
+  "done",
+  "failed",
+  "working",
+  "idle",
+];
+
+export const SIDEBAR_STATUS_GROUP_LABELS: Record<SidebarStatusGroup, string> = {
+  needs_input: "Needs input",
+  done: "Done",
+  failed: "Failed",
+  working: "Working",
+  idle: "Idle",
+};
+
+// The summary shell drops the pending request; only `source` keeps its time.
+export type SidebarGroupableThread = ThreadStatusInput &
+  SidebarThreadStatusInput &
+  Pick<SidebarThreadSummary, "id" | "environmentId" | "updatedAt"> & {
+    readonly source: {
+      readonly pendingRuntimeRequest: { readonly createdAt: DateTime.Utc } | null;
+    };
+  };
+
+export interface SidebarActiveThreadGroup<T> {
+  readonly group: SidebarStatusGroup | null;
+  readonly threads: readonly T[];
+}
+
+export function resolveSidebarStatusGroup(
+  thread: SidebarGroupableThread,
+  localLastVisitedAt: string | undefined,
+): SidebarStatusGroup {
+  switch (resolveSidebarThreadStatus(thread)) {
+    case "approval":
+    case "input":
+      return "needs_input";
+    case "failed":
+    case "limited":
+      return "failed";
+    case "working":
+    case "waiting":
+      return "working";
+    case "ready": {
+      const lastVisitedAt = resolveThreadLastVisitedAt(thread.lastVisitedAt, localLastVisitedAt);
+      return hasUnseenCompletion({ ...thread, lastVisitedAt }) ? "done" : "idle";
+    }
+  }
+}
+
+function sidebarGroupThreadKey(thread: SidebarGroupableThread): string {
+  return scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+}
+
+function statusGroupTimestampMs(thread: SidebarGroupableThread, group: SidebarStatusGroup): number {
+  switch (group) {
+    case "needs_input": {
+      const request = thread.source.pendingRuntimeRequest;
+      return request === null
+        ? firstValidTimestampMs(thread.updatedAt)
+        : DateTime.toEpochMillis(request.createdAt);
+    }
+    case "done":
+      return firstValidTimestampMs(thread.latestRun?.completedAt);
+    case "failed":
+      return firstValidTimestampMs(thread.latestRun?.completedAt, thread.updatedAt);
+    case "working":
+      return firstValidTimestampMs(thread.latestRun?.startedAt, thread.updatedAt);
+    case "idle":
+      return firstValidTimestampMs(thread.updatedAt);
+  }
+}
+
+// Same tie-break as sortActiveThreadsByOrderKey, so equal timestamps never shuffle.
+function sortByTimestamp<T extends SidebarGroupableThread>(
+  threads: readonly T[],
+  direction: SidebarSortDirection,
+  timestampOf: (thread: T) => number,
+): T[] {
+  return threads.toSorted((left, right) => {
+    const delta = timestampOf(left) - timestampOf(right);
+    return (
+      (direction === "oldest" ? delta : -delta) ||
+      left.id.localeCompare(right.id) ||
+      (left.environmentId ?? "").localeCompare(right.environmentId ?? "")
+    );
+  });
+}
+
+export function groupSidebarActiveThreads<T extends SidebarGroupableThread>(
+  threads: readonly T[],
+  options: {
+    readonly mode: SidebarActiveSortMode;
+    readonly direction: SidebarSortDirection;
+    readonly lastVisitedAtByKey: Readonly<Record<string, string>>;
+  },
+): readonly SidebarActiveThreadGroup<T>[] {
+  if (threads.length === 0) return [];
+  if (options.mode === "manual") return [{ group: null, threads }];
+  if (options.mode === "time") {
+    return [
+      {
+        group: null,
+        threads: sortByTimestamp(threads, options.direction, (thread) =>
+          firstValidTimestampMs(thread.updatedAt),
+        ),
+      },
+    ];
+  }
+  const buckets = new Map<SidebarStatusGroup, T[]>();
+  for (const thread of threads) {
+    const group = resolveSidebarStatusGroup(
+      thread,
+      options.lastVisitedAtByKey[sidebarGroupThreadKey(thread)],
+    );
+    const bucket = buckets.get(group);
+    if (bucket === undefined) buckets.set(group, [thread]);
+    else bucket.push(thread);
+  }
+  return SIDEBAR_STATUS_GROUP_ORDER.flatMap((group) => {
+    const bucket = buckets.get(group);
+    return bucket === undefined
+      ? []
+      : [
+          {
+            group,
+            threads: sortByTimestamp(bucket, options.direction, (thread) =>
+              statusGroupTimestampMs(thread, group),
+            ),
+          },
+        ];
+  });
+}
+
+export function filterSidebarAttentionThreads<T extends SidebarGroupableThread>(
+  threads: readonly T[],
+  lastVisitedAtByKey: Readonly<Record<string, string>>,
+): T[] {
+  return threads.filter((thread) => {
+    const group = resolveSidebarStatusGroup(
+      thread,
+      lastVisitedAtByKey[sidebarGroupThreadKey(thread)],
+    );
+    return group === "needs_input" || group === "done" || group === "failed";
+  });
 }
 
 export type SidebarV2TopStatusKind =
