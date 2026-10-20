@@ -47,7 +47,9 @@ import {
   type ResponseStreamingMode,
   MIN_TERMINAL_FONT_SIZE,
   type QuitConfirmationMode,
+  SidebarActiveSortMode,
   SidebarProjectSortOrder,
+  SidebarSortDirection,
 } from "@t3tools/contracts/settings";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -196,6 +198,17 @@ const SIDEBAR_PROJECT_SORT_ORDER_LABELS: Record<SidebarProjectSortOrder, string>
   manual: "Manual",
 };
 const isSidebarProjectSortOrder = Schema.is(SidebarProjectSortOrder);
+const SIDEBAR_ACTIVE_SORT_MODE_LABELS: Record<SidebarActiveSortMode, string> = {
+  manual: "Manual",
+  time: "By time",
+  status: "By status",
+};
+const isSidebarActiveSortMode = Schema.is(SidebarActiveSortMode);
+const SIDEBAR_SORT_DIRECTION_LABELS: Record<SidebarSortDirection, string> = {
+  oldest: "Oldest first",
+  newest: "Newest first",
+};
+const isSidebarSortDirection = Schema.is(SidebarSortDirection);
 
 const TIMESTAMP_FORMAT_LABELS = {
   locale: "System default",
@@ -571,6 +584,12 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.sidebarProjectSortOrder !== DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder
       ? ["Project order"]
       : []),
+    ...(settings.sidebarActiveSortMode !== DEFAULT_UNIFIED_SETTINGS.sidebarActiveSortMode
+      ? ["Thread order"]
+      : []),
+    ...(settings.sidebarSortDirection !== DEFAULT_UNIFIED_SETTINGS.sidebarSortDirection
+      ? ["Thread order direction"]
+      : []),
     ...(settings.sidebarWorkingShelfEnabled !== DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled
       ? ["Working section"]
       : []),
@@ -742,6 +761,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
       sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
       sidebarProjectSortOrder: DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder,
+      sidebarActiveSortMode: DEFAULT_UNIFIED_SETTINGS.sidebarActiveSortMode,
+      sidebarSortDirection: DEFAULT_UNIFIED_SETTINGS.sidebarSortDirection,
       sidebarWorkingShelfEnabled: DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled,
       sidebarAutoSettleAfterDays: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
       sidebarAutoSettleKeepPullRequests: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleKeepPullRequests,
@@ -2236,6 +2257,89 @@ export function GeneralSettingsPanel() {
                 {SidebarProjectSortOrder.literals.map((sortOrder) => (
                   <SelectItem hideIndicator key={sortOrder} value={sortOrder}>
                     {SIDEBAR_PROJECT_SORT_ORDER_LABELS[sortOrder]}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          {...searchableSetting("thread-order")}
+          description="Order of threads in the sidebar's Active section. Drag reorder works only in Manual."
+          resetAction={
+            settings.sidebarActiveSortMode !== DEFAULT_UNIFIED_SETTINGS.sidebarActiveSortMode ? (
+              <SettingResetButton
+                label="thread order"
+                onClick={() =>
+                  updateSettings({
+                    sidebarActiveSortMode: DEFAULT_UNIFIED_SETTINGS.sidebarActiveSortMode,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.sidebarActiveSortMode}
+              onValueChange={(value) => {
+                if (isSidebarActiveSortMode(value)) {
+                  updateSettings({ sidebarActiveSortMode: value });
+                }
+              }}
+            >
+              <SelectTrigger size="sm" className="w-full sm:w-44" aria-label="Thread order">
+                <SelectValue>
+                  {SIDEBAR_ACTIVE_SORT_MODE_LABELS[settings.sidebarActiveSortMode]}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {SidebarActiveSortMode.literals.map((mode) => (
+                  <SelectItem hideIndicator key={mode} value={mode}>
+                    {SIDEBAR_ACTIVE_SORT_MODE_LABELS[mode]}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          {...searchableSetting("thread-order-direction")}
+          description="Oldest first puts the longest-waiting thread at the top. Applies to By time and By status."
+          resetAction={
+            settings.sidebarSortDirection !== DEFAULT_UNIFIED_SETTINGS.sidebarSortDirection ? (
+              <SettingResetButton
+                label="thread order direction"
+                onClick={() =>
+                  updateSettings({
+                    sidebarSortDirection: DEFAULT_UNIFIED_SETTINGS.sidebarSortDirection,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.sidebarSortDirection}
+              disabled={settings.sidebarActiveSortMode === "manual"}
+              onValueChange={(value) => {
+                if (isSidebarSortDirection(value)) {
+                  updateSettings({ sidebarSortDirection: value });
+                }
+              }}
+            >
+              <SelectTrigger
+                size="sm"
+                className="w-full sm:w-44"
+                aria-label="Thread order direction"
+              >
+                <SelectValue>
+                  {SIDEBAR_SORT_DIRECTION_LABELS[settings.sidebarSortDirection]}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {SidebarSortDirection.literals.map((direction) => (
+                  <SelectItem hideIndicator key={direction} value={direction}>
+                    {SIDEBAR_SORT_DIRECTION_LABELS[direction]}
                   </SelectItem>
                 ))}
               </SelectPopup>
