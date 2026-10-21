@@ -65,7 +65,11 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 
-import type { TimestampFormat } from "@t3tools/contracts/settings";
+import type {
+  SidebarActiveSortMode,
+  SidebarSortDirection,
+  TimestampFormat,
+} from "@t3tools/contracts/settings";
 import {
   AlarmClockIcon,
   AlarmClockOffIcon,
@@ -133,6 +137,7 @@ import {
   projectGroupsSpanEnvironments,
   resolveSidebarProjectScopeKey,
   getSidebarProjectSettingsKey,
+  SIDEBAR_NEEDS_YOU_SCOPE_KEY,
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
 import { useUiStateStore } from "../uiStateStore";
@@ -147,7 +152,7 @@ import { useTerminalFocus } from "../hooks/useTerminalFocus";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { registerSettleAndAdvance } from "../settleAndAdvance";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
-import { useClientSettings } from "../hooks/useSettings";
+import { updateClientSettings, useClientSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useNowMinute } from "../hooks/useNowMinute";
@@ -232,7 +237,13 @@ import {
   type SidebarListMarker,
   type SidebarSection,
   resolveSidebarRowThreadId,
+  filterSidebarAttentionThreads,
+  groupSidebarActiveThreads,
+  SIDEBAR_STATUS_GROUP_LABELS,
+  type SidebarActiveThreadGroup,
+  type SidebarStatusGroup,
 } from "./Sidebar.logic";
+import { SidebarSortMenu } from "./sidebar/SidebarSortMenu";
 import { resolveLocalCheckoutBranchMismatch } from "./BranchToolbar.logic";
 import {
   createSidebarCollisionDetection,
@@ -389,6 +400,10 @@ interface SidebarThreadPartitionInput {
   readonly serverConfigs: ReadonlyMap<EnvironmentId, EnvironmentServerConfig>;
   readonly optimisticDrop: SidebarOptimisticDrop | null;
   readonly workingShelfEnabled: boolean;
+  readonly sortMode: SidebarActiveSortMode;
+  readonly sortDirection: SidebarSortDirection;
+  readonly lastVisitedAtByKey: Readonly<Record<string, string>>;
+  readonly needsYouScope: boolean;
   // Snooze wakes and the queued-turn grace depend on the clock, so the minute
   // tick and the precise snooze-wake tick are inputs: a new key repartitions.
   readonly clockKey: string;
@@ -469,6 +484,14 @@ function useSidebarThreads(input: {
           ),
         );
   const workingShelfEnabled = useClientSettings((s) => s.sidebarWorkingShelfEnabled);
+  const sortModeSetting = useClientSettings((s) => s.sidebarActiveSortMode);
+  const sortDirection = useClientSettings((s) => s.sidebarSortDirection);
+  // Read once at list level; rows keep their own per-key subscription.
+  const lastVisitedAtByKey = useUiStateStore((state) => state.threadLastVisitedAtById);
+  const needsYouScope = projectScopeKey === SIDEBAR_NEEDS_YOU_SCOPE_KEY;
+  // Needs you has no drag, so a stored manual order has nothing to show there.
+  const sortMode: SidebarActiveSortMode =
+    needsYouScope && sortModeSetting === "manual" ? "status" : sortModeSetting;
   const nowMinute = useNowMinute();
   // Snooze wake times are second-precise, so classifying with the quantized
   // minute would hold a woken thread on the shelf for up to a minute.
@@ -510,6 +533,10 @@ function useSidebarThreads(input: {
     serverConfigs,
     optimisticDrop,
     workingShelfEnabled,
+    sortMode,
+    sortDirection,
+    lastVisitedAtByKey,
+    needsYouScope,
     clockKey: `${nowMinute}:${snoozeWakeTick}`,
   });
   const partitionNextWakeAt = partition.snoozedThreads[0]?.snoozedUntil ?? null;
@@ -559,6 +586,9 @@ function useSidebarThreads(input: {
     ...partition,
     threads,
     workingShelfEnabled,
+    sortMode,
+    sortDirection,
+    needsYouScope,
     searchableThreads: [
       ...pinnedThreads,
       ...activeThreads,
@@ -598,11 +628,52 @@ function useSidebarThreads(input: {
   };
 }
 
+function layoutActiveGroups(groups: readonly SidebarActiveThreadGroup<EnvironmentThreadShell>[]) {
+  const statusGroupByFirstKey = new Map<string, SidebarStatusGroup>();
+  for (const { group, threads } of groups) {
+    const first = threads[0];
+    if (group !== null && first !== undefined) {
+      statusGroupByFirstKey.set(threadShellKey(first), group);
+    }
+  }
+  return { activeThreads: groups.flatMap((entry) => entry.threads), statusGroupByFirstKey };
+}
+
 function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
-  const { threads, scopedProjectKeys, serverConfigs, optimisticDrop, workingShelfEnabled } = input;
+  const {
+    threads,
+    scopedProjectKeys,
+    serverConfigs,
+    optimisticDrop,
+    workingShelfEnabled,
+    sortMode,
+    sortDirection,
+    lastVisitedAtByKey,
+    needsYouScope,
+  } = input;
   const preciseNow = new Date().toISOString();
   const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys);
   inboxReturns.observe(workingShelfEnabled ? threads : null);
+  const attention = filterSidebarAttentionThreads(
+    filterSidebarV2VisibleThreads(threads, null),
+    lastVisitedAtByKey,
+  );
+  const groupOptions = { mode: sortMode, direction: sortDirection, lastVisitedAtByKey };
+  if (needsYouScope) {
+    // Shelf classification is skipped, not hidden afterwards: a pinned or
+    // snoozed thread waiting on the user still belongs in this list.
+    return {
+      pinnedThreads: EMPTY_THREADS,
+      draggableThreadKeys: new Set<string>(),
+      activeReorderableThreadKeys: new Set<string>(),
+      ...layoutActiveGroups(groupSidebarActiveThreads(attention, groupOptions)),
+      workingThreads: EMPTY_THREADS,
+      snoozedThreads: EMPTY_THREADS,
+      settledThreads: EMPTY_THREADS,
+      snoozeNow: preciseNow,
+      needsYouCount: attention.length,
+    };
+  }
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
   const working: EnvironmentThreadShell[] = [];
@@ -672,14 +743,19 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
           }),
     draggableThreadKeys: draggable,
     activeReorderableThreadKeys: activeReorderable,
-    activeThreads:
-      optimisticDrop?.section !== "active" || optimisticDrop.order === null
-        ? sortedActive
-        : orderItemsByPreferredIds({
-            items: sortedActive,
-            preferredIds: optimisticDrop.order,
-            getId: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-          }),
+    ...layoutActiveGroups(
+      groupSidebarActiveThreads(
+        optimisticDrop?.section !== "active" || optimisticDrop.order === null
+          ? sortedActive
+          : orderItemsByPreferredIds({
+              items: sortedActive,
+              preferredIds: optimisticDrop.order,
+              getId: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+            }),
+        groupOptions,
+      ),
+    ),
+    needsYouCount: attention.length,
     workingThreads: sortWorkingThreadsBySend(working),
     snoozedThreads: snoozed.toSorted(
       (left, right) =>
@@ -789,6 +865,7 @@ function useSidebarLookups() {
   );
   const projectScopeItems = [
     { value: "all", label: "All projects" },
+    { value: SIDEBAR_NEEDS_YOU_SCOPE_KEY, label: "Needs you" },
     ...projectGroups.map((project) => ({ value: project.projectKey, label: project.displayName })),
   ];
   return {
@@ -1203,6 +1280,18 @@ function SortableSidebarMarker(props: {
       }}
     >
       {props.children}
+    </li>
+  );
+}
+
+function SidebarStatusGroupHeader({ group }: { readonly group: SidebarStatusGroup }) {
+  return (
+    <li
+      data-testid={`sidebar-status-group-${group}`}
+      className="mx-0.5 flex h-8 list-none items-center gap-2 px-2 text-xs font-medium text-sidebar-muted-foreground/60"
+    >
+      <span className="shrink-0">{SIDEBAR_STATUS_GROUP_LABELS[group]}</span>
+      <span aria-hidden className="h-px min-w-2 flex-1 bg-sidebar-border/60" />
     </li>
   );
 }
@@ -2936,6 +3025,7 @@ export default function Sidebar() {
   ]);
   const routeDraftIdForRows = routeTarget?.kind === "draft" ? routeTarget.draftId : null;
   const visibleDraftSessionCount = useComposerDraftStore((store) => {
+    if (projectScopeKey === SIDEBAR_NEEDS_YOU_SCOPE_KEY) return 0;
     let count = 0;
     for (const [draftKey, session] of Object.entries(store.draftThreadsByThreadKey)) {
       if (session.promotedTo != null) {
@@ -3020,6 +3110,11 @@ export default function Sidebar() {
     pinnedKeysById,
     activeKeysById,
     routeRowThreadKey,
+    statusGroupByFirstKey,
+    needsYouCount,
+    sortMode,
+    sortDirection,
+    needsYouScope,
   } = useSidebarThreads({
     projectScopeKey,
     scopedProjectKeys,
@@ -3340,6 +3435,8 @@ export default function Sidebar() {
   };
 
   // Working rows can supply chat context, but never preview sidebar movement.
+  // Drag writes manual order keys; any other mode would fight the derived order.
+  const dragEnabled = sortMode === "manual" && !needsYouScope;
   const isContextDrag = dragState?.contextDrag === true || dragState?.activeSection === "working";
   const dragTargetSection = isContextDrag ? null : (dragState?.targetSection ?? null);
   const finishThreadDrag = (started: boolean) => {
@@ -3580,10 +3677,12 @@ export default function Sidebar() {
       items.push({ kind: "marker", marker: "snoozed-header" });
       items.push(...rowsOf(visibleSnoozedThreads, "snoozed"));
     }
-    items.push({ kind: "marker", marker: "settled-header" });
-    const settledRows = rowsOf(renderedSettledThreads, "settled");
-    items.push({ kind: "marker", marker: "settled-placeholder" });
-    items.push(...settledRows);
+    if (!needsYouScope) {
+      items.push({ kind: "marker", marker: "settled-header" });
+      const settledRows = rowsOf(renderedSettledThreads, "settled");
+      items.push({ kind: "marker", marker: "settled-placeholder" });
+      items.push(...settledRows);
+    }
     return items;
   })();
   // Thread shells update on every streamed event without moving rows. Keep the
@@ -4655,7 +4754,11 @@ export default function Sidebar() {
                             ) : (
                               <FolderIcon className="size-4 shrink-0" />
                             )}
-                            <span className="min-w-0 flex-1 truncate text-sm">{item.label}</span>
+                            <span className="min-w-0 flex-1 truncate text-sm">
+                              {item.value === SIDEBAR_NEEDS_YOU_SCOPE_KEY && needsYouCount > 0
+                                ? `${item.label} (${needsYouCount})`
+                                : item.label}
+                            </span>
                             {project && showProjectEnvironments ? (
                               <ProjectEnvironmentBadge
                                 group={project}
@@ -4685,6 +4788,19 @@ export default function Sidebar() {
                     </ComboboxList>
                   </ComboboxPopup>
                 </Combobox>
+              }
+              sortMenu={
+                <SidebarSortMenu
+                  mode={sortMode}
+                  direction={sortDirection}
+                  allowManual={!needsYouScope}
+                  onModeChange={(mode) =>
+                    void updateClientSettings({ sidebarActiveSortMode: mode })
+                  }
+                  onDirectionChange={(direction) =>
+                    void updateClientSettings({ sidebarSortDirection: direction })
+                  }
+                />
               }
               onNewProject={openAddProjectCommandPalette}
               onNewThread={handleNewThreadClick}
@@ -4826,7 +4942,8 @@ export default function Sidebar() {
                             sortableDisabled={
                               renamingThreadKey === threadKey ||
                               !draggableThreadKeys.has(threadKey) ||
-                              optimisticDrop !== null
+                              optimisticDrop !== null ||
+                              !dragEnabled
                             }
                             thread={thread}
                             variant={rowVariant}
@@ -4918,19 +5035,33 @@ export default function Sidebar() {
                         );
                       };
                       const from = isContextDrag ? null : (dragState?.activeSection ?? null);
-                      const items: ReactNode[] = [
-                        <SidebarDraftBlock
-                          key="draft-sessions"
-                          projectByKey={projectByKey}
-                          projectDisplayNameByKey={projectDisplayNameByKey}
-                          scopedProjectKeys={scopedProjectKeys}
-                          routeDraftId={routeDraftIdForRows}
-                          onNavigateToDraft={navigateToDraft}
-                          onDraftContextMenu={handleDraftContextMenu}
-                        />,
-                      ];
+                      const items: ReactNode[] = needsYouScope
+                        ? []
+                        : [
+                            <SidebarDraftBlock
+                              key="draft-sessions"
+                              projectByKey={projectByKey}
+                              projectDisplayNameByKey={projectDisplayNameByKey}
+                              scopedProjectKeys={scopedProjectKeys}
+                              routeDraftId={routeDraftIdForRows}
+                              onNavigateToDraft={navigateToDraft}
+                              onDraftContextMenu={handleDraftContextMenu}
+                            />,
+                          ];
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
+                          const statusGroup =
+                            item.section === "active"
+                              ? statusGroupByFirstKey.get(item.key)
+                              : undefined;
+                          if (statusGroup !== undefined) {
+                            items.push(
+                              <SidebarStatusGroupHeader
+                                key={`status-group-${statusGroup}`}
+                                group={statusGroup}
+                              />,
+                            );
+                          }
                           items.push(renderThreadRow(threadByKey.get(item.key)!, item.section));
                           continue;
                         }
@@ -5081,7 +5212,9 @@ export default function Sidebar() {
             settledThreads.length ===
             0 ? (
             <div className="flex flex-col items-center gap-2 px-2 py-6 text-center text-xs text-muted-foreground/60">
-              {projects.length === 0 ? (
+              {needsYouScope ? (
+                "Nothing needs you"
+              ) : projects.length === 0 ? (
                 <>
                   <span>No projects yet</span>
                   <button

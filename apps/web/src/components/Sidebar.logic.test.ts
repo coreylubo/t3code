@@ -36,6 +36,9 @@ import {
   resolveSidebarThreadSection,
   resolveSidebarRowAccessibility,
   resolveSidebarThreadStatus,
+  resolveSidebarStatusGroup,
+  groupSidebarActiveThreads,
+  filterSidebarAttentionThreads,
   resolveSidebarV2TopStatus,
   resolveThreadLastVisitedAt,
   resolveThreadStatusPill,
@@ -61,7 +64,15 @@ import {
   resolveSidebarDropVerb,
 } from "./Sidebar.logic";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
-import { EnvironmentId, ProjectId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  ProviderInstanceId,
+  RunId,
+  RuntimeRequestId,
+  ThreadId,
+} from "@t3tools/contracts";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 
 import {
   DEFAULT_INTERACTION_MODE,
@@ -544,13 +555,8 @@ describe("hasUnseenCompletion", () => {
   it("returns true when a thread completed after its last visit", () => {
     expect(
       hasUnseenCompletion({
-        hasActionableProposedPlan: false,
-        hasPendingApprovals: false,
-        hasPendingUserInput: false,
-        interactionMode: "default",
         latestRun: makeLatestRun(),
         lastVisitedAt: "2026-03-09T10:04:00.000Z",
-        runtime: null,
       }),
     ).toBe(true);
   });
@@ -558,13 +564,8 @@ describe("hasUnseenCompletion", () => {
   it("treats a missing client visit marker as read", () => {
     expect(
       hasUnseenCompletion({
-        hasActionableProposedPlan: false,
-        hasPendingApprovals: false,
-        hasPendingUserInput: false,
-        interactionMode: "default",
         latestRun: makeLatestRun(),
         lastVisitedAt: undefined,
-        runtime: null,
       }),
     ).toBe(false);
   });
@@ -2447,5 +2448,216 @@ describe("Working shelf (beta)", () => {
         unsnooze: false,
       });
     });
+  });
+});
+
+describe("groupSidebarActiveThreads", () => {
+  const runtimeOf = (status: "running" | "failed", lastErrorClass?: "usage_limit") => ({
+    status,
+    activeRunId: null,
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    providerName: "Codex",
+    lastError: null,
+    ...(lastErrorClass ? { lastErrorClass } : {}),
+    updatedAt: "2026-03-09T10:00:00.000Z",
+  });
+  const groupThread = (id: string, overrides: ThreadFixtureOverrides = {}) =>
+    makeThreadFixture({
+      environmentId: localEnvironmentId,
+      id: ThreadId.make(id),
+      runtime: null,
+      latestRun: null,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      lastVisitedAt: null,
+      updatedAt: "2026-03-09T10:00:00.000Z",
+      ...overrides,
+    });
+  const awaitingInput = (id: string, requestedAt: string | null, updatedAt?: string) => {
+    const thread = groupThread(id, {
+      hasPendingUserInput: true,
+      ...(updatedAt ? { updatedAt } : {}),
+    });
+    return {
+      ...thread,
+      source: {
+        ...thread.source,
+        pendingRuntimeRequest:
+          requestedAt === null
+            ? null
+            : {
+                id: RuntimeRequestId.make(`request-${id}`),
+                kind: "user_input" as const,
+                createdAt: DateTime.makeUnsafe(requestedAt),
+              },
+      },
+    };
+  };
+  // Visited before the run completed, so the completion is unseen.
+  const doneUnread = (id: string, completedAt: string) =>
+    groupThread(id, {
+      latestRun: makeLatestRun({ completedAt }),
+      lastVisitedAt: "2026-03-09T09:00:00.000Z",
+    });
+  const keyOf = (id: string) =>
+    scopedThreadKey(scopeThreadRef(localEnvironmentId, ThreadId.make(id)));
+  const shape = (groups: ReturnType<typeof groupSidebarActiveThreads>) =>
+    groups.map((entry) => [entry.group, entry.threads.map((thread) => thread.id)]);
+  const NO_LOCAL_VISITS = {};
+
+  it("buckets status mode in a fixed order and omits empty buckets", () => {
+    const threads = [
+      groupThread("idle"),
+      groupThread("working", { runtime: runtimeOf("running") }),
+      groupThread("limited", { runtime: runtimeOf("failed", "usage_limit") }),
+      doneUnread("done", "2026-03-09T10:05:00.000Z"),
+      awaitingInput("input", "2026-03-09T10:01:00.000Z"),
+    ];
+    expect(
+      shape(
+        groupSidebarActiveThreads(threads, {
+          mode: "status",
+          direction: "oldest",
+          lastVisitedAtByKey: NO_LOCAL_VISITS,
+        }),
+      ),
+    ).toEqual([
+      ["needs_input", ["input"]],
+      ["done", ["done"]],
+      ["failed", ["limited"]],
+      ["working", ["working"]],
+      ["idle", ["idle"]],
+    ]);
+  });
+
+  it("orders needs_input by request time and flips only within buckets", () => {
+    const threads = [
+      awaitingInput("late", "2026-03-09T10:03:00.000Z"),
+      awaitingInput("early", "2026-03-09T10:01:00.000Z"),
+      doneUnread("done-late", "2026-03-09T10:09:00.000Z"),
+      doneUnread("done-early", "2026-03-09T10:06:00.000Z"),
+    ];
+    const options = { mode: "status", lastVisitedAtByKey: NO_LOCAL_VISITS } as const;
+    expect(shape(groupSidebarActiveThreads(threads, { ...options, direction: "oldest" }))).toEqual([
+      ["needs_input", ["early", "late"]],
+      ["done", ["done-early", "done-late"]],
+    ]);
+    expect(shape(groupSidebarActiveThreads(threads, { ...options, direction: "newest" }))).toEqual([
+      ["needs_input", ["late", "early"]],
+      ["done", ["done-late", "done-early"]],
+    ]);
+  });
+
+  it("falls back to updatedAt when a needs_input thread has no pending request", () => {
+    const threads = [
+      awaitingInput("request", "2026-03-09T10:02:00.000Z"),
+      awaitingInput("fallback", null, "2026-03-09T10:01:00.000Z"),
+    ];
+    expect(
+      shape(
+        groupSidebarActiveThreads(threads, {
+          mode: "status",
+          direction: "oldest",
+          lastVisitedAtByKey: NO_LOCAL_VISITS,
+        }),
+      ),
+    ).toEqual([["needs_input", ["fallback", "request"]]]);
+  });
+
+  it("breaks timestamp ties on thread id", () => {
+    const threads = [groupThread("b"), groupThread("a")];
+    expect(
+      shape(
+        groupSidebarActiveThreads(threads, {
+          mode: "time",
+          direction: "oldest",
+          lastVisitedAtByKey: NO_LOCAL_VISITS,
+        }),
+      ),
+    ).toEqual([[null, ["a", "b"]]]);
+  });
+
+  it("breaks equal timestamps and ids on environment id", () => {
+    const otherEnvironmentId = EnvironmentId.make("environment-z");
+    const threads = [
+      groupThread("same", { environmentId: otherEnvironmentId }),
+      groupThread("same"),
+      groupThread("other", { environmentId: otherEnvironmentId }),
+    ];
+    const order = (direction: "oldest" | "newest") =>
+      groupSidebarActiveThreads(threads, {
+        mode: "time",
+        direction,
+        lastVisitedAtByKey: NO_LOCAL_VISITS,
+      }).flatMap((entry) => entry.threads.map((thread) => [thread.id, thread.environmentId]));
+    // The tie-break is not flipped by direction, matching sortActiveThreadsByOrderKey.
+    for (const direction of ["oldest", "newest"] as const) {
+      expect(order(direction)).toEqual([
+        ["other", otherEnvironmentId],
+        ["same", localEnvironmentId],
+        ["same", otherEnvironmentId],
+      ]);
+    }
+  });
+
+  it("sorts time mode by updatedAt as one ungrouped list", () => {
+    const threads = [
+      groupThread("new", { updatedAt: "2026-03-09T11:00:00.000Z" }),
+      groupThread("old", { updatedAt: "2026-03-09T09:00:00.000Z" }),
+    ];
+    const options = { mode: "time", lastVisitedAtByKey: NO_LOCAL_VISITS } as const;
+    expect(shape(groupSidebarActiveThreads(threads, { ...options, direction: "oldest" }))).toEqual([
+      [null, ["old", "new"]],
+    ]);
+    expect(shape(groupSidebarActiveThreads(threads, { ...options, direction: "newest" }))).toEqual([
+      [null, ["new", "old"]],
+    ]);
+  });
+
+  it("keeps the given order in manual mode", () => {
+    const threads = [groupThread("second"), groupThread("first")];
+    expect(
+      shape(
+        groupSidebarActiveThreads(threads, {
+          mode: "manual",
+          direction: "newest",
+          lastVisitedAtByKey: NO_LOCAL_VISITS,
+        }),
+      ),
+    ).toEqual([[null, ["second", "first"]]]);
+  });
+
+  it("uses the local visit only when the server does not track visits", () => {
+    const { lastVisitedAt: _serverVisit, ...untracked } = groupThread("untracked", {
+      latestRun: makeLatestRun({ completedAt: "2026-03-09T10:05:00.000Z" }),
+    });
+    const visitedBeforeCompletion = { [keyOf("untracked")]: "2026-03-09T10:01:00.000Z" };
+    const visitedAfterCompletion = { [keyOf("untracked")]: "2026-03-09T10:06:00.000Z" };
+    expect(resolveSidebarStatusGroup(untracked, visitedBeforeCompletion[keyOf("untracked")])).toBe(
+      "done",
+    );
+    expect(resolveSidebarStatusGroup(untracked, visitedAfterCompletion[keyOf("untracked")])).toBe(
+      "idle",
+    );
+    // An explicit server null (never visited) wins over a local visit.
+    const tracked = groupThread("tracked", {
+      latestRun: makeLatestRun({ completedAt: "2026-03-09T10:05:00.000Z" }),
+      lastVisitedAt: null,
+    });
+    expect(resolveSidebarStatusGroup(tracked, "2026-03-09T10:01:00.000Z")).toBe("idle");
+  });
+
+  it("filters the threads that need the user", () => {
+    const threads = [
+      awaitingInput("input", "2026-03-09T10:01:00.000Z"),
+      groupThread("approval", { hasPendingApprovals: true }),
+      doneUnread("done", "2026-03-09T10:05:00.000Z"),
+      groupThread("failed", { runtime: runtimeOf("failed") }),
+      groupThread("working", { runtime: runtimeOf("running") }),
+      groupThread("idle"),
+    ];
+    expect(
+      filterSidebarAttentionThreads(threads, NO_LOCAL_VISITS).map((thread) => thread.id),
+    ).toEqual(["input", "approval", "done", "failed"]);
   });
 });

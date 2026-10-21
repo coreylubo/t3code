@@ -585,3 +585,21 @@ describe("settings sidebar scope", () => {
     expect(isSettingsOverviewVisible({ project: "project", checkout: "checkout" })).toBe(true);
   });
 });
+
+describe("thread order settings search", () => {
+  it("routes both thread order rows to General", () => {
+    for (const id of ["thread-order", "thread-order-direction"]) {
+      expect(SETTINGS_SEARCH_ITEMS.find((item) => item.id === id)).toMatchObject({
+        id,
+        to: "/settings/general",
+      });
+    }
+    expect(searchSettings("thread order direction")[0]).toMatchObject({
+      id: "thread-order-direction",
+      to: "/settings/general",
+    });
+    expect(searchSettings("thread order").map((item) => item.id)).toEqual(
+      expect.arrayContaining(["thread-order", "thread-order-direction"]),
+    );
+  });
+});

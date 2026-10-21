@@ -66,6 +66,8 @@ export function getSidebarProjectSettingsKey(
   );
 }
 
+export const SIDEBAR_NEEDS_YOU_SCOPE_KEY = "needs-you";
+
 export function resolveSidebarProjectScopeKey(input: {
   readonly groups: ReadonlyArray<SidebarProjectSnapshot>;
   readonly key: string | null;
@@ -73,6 +75,8 @@ export function resolveSidebarProjectScopeKey(input: {
   readonly canClearMissingScope?: boolean;
 }): string | null {
   if (input.key === null) return null;
+  // Not a project group, so the missing-group cleanup below must never clear it.
+  if (input.key === SIDEBAR_NEEDS_YOU_SCOPE_KEY) return input.key;
   const group =
     input.groups.find((candidate) => candidate.projectKey === input.key) ??
     input.groups.find(

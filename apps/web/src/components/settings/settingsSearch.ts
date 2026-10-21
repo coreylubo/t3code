@@ -311,6 +311,18 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["sort projects sidebar manual created recent"],
   },
   {
+    id: "thread-order",
+    title: "Thread order",
+    to: "/settings/general",
+    searchTerms: ["sort threads sidebar manual time status needs you"],
+  },
+  {
+    id: "thread-order-direction",
+    title: "Thread order direction",
+    to: "/settings/general",
+    searchTerms: ["sort threads oldest newest first ascending descending"],
+  },
+  {
     id: "snooze-limited-threads",
     title: "Snooze limited threads",
     to: "/settings/general",
